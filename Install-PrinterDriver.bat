@@ -1,3 +1,4 @@
 @echo off
-rem Double-click this file to search for and install a printer driver.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-PrinterDriver.ps1" %*
+rem Double-click this file to open the printer driver installer window.
+rem (For the command-line version, run Install-PrinterDriver.ps1 in PowerShell.)
+start "" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0Install-PrinterDriver-GUI.ps1"

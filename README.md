@@ -5,14 +5,23 @@ no Next / Accept clicks.
 
 ## Use
 
-Double-click `Install-PrinterDriver.bat`, or from PowerShell:
+Double-click **`Install-PrinterDriver.bat`**. A window opens:
+
+1. Type the printer name (e.g. `LaserJet M404`) and click **Search**.
+2. Click the result you want.
+3. (Optional) type the printer's IP address if it's a network printer.
+4. Click **Install selected driver**.
+
+You get **one** administrator (UAC) prompt when the window opens, and that's all.
+
+Command-line version (same engine):
 
 ```powershell
-.\Install-PrinterDriver.ps1 "HP LaserJet M404"
-.\Install-PrinterDriver.ps1 "Canon MF445dw" -PrinterIP 192.168.1.50 -Yes   # also add the network printer
+.\Install-PrinterDriver.ps1 "Canon MF445dw" -PrinterIP 192.168.1.50 -Yes
 ```
 
-You'll get **one** administrator (UAC) prompt, and that's all.
+Files: `Install-PrinterDriver-GUI.ps1` (window), `Install-PrinterDriver.ps1` (command line),
+`PrinterDriverLib.ps1` (shared search/install code; keep it in the same folder).
 
 ## Where it looks (in order)
 
