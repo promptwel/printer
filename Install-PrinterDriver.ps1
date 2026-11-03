@@ -9,6 +9,11 @@
 .PARAMETER PrinterIP
     Optional. If given, also creates a network printer at this IP using the new driver.
 
+.PARAMETER Package
+    Skip the search and install a driver you downloaded from Canon / Epson / Brother:
+    a local file (.exe .msi .cab .zip) or an https link on a vendor site.
+    Put the printer model in -Name so it can be registered by name.
+
 .PARAMETER Yes
     Don't ask questions: take the first result.
 
@@ -17,11 +22,15 @@
 
 .EXAMPLE
     .\Install-PrinterDriver.ps1 "Canon MF445dw" -PrinterIP 192.168.1.50 -Yes
+
+.EXAMPLE
+    .\Install-PrinterDriver.ps1 "Brother HL-L2350DW" -Package "$env:USERPROFILE\Downloads\Y16E_C1-hostm-K1.EXE"
 #>
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)][string]$Name,
     [string]$PrinterIP,
+    [string]$Package,
     [switch]$Yes,
     [switch]$NoPause
 )
@@ -32,6 +41,7 @@ if (-not (Test-Admin)) {
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
     if ($Name)      { $argList += @('-Name', "`"$Name`"") }
     if ($PrinterIP) { $argList += @('-PrinterIP', "`"$PrinterIP`"") }
+    if ($Package)   { $argList += @('-Package', "`"$Package`"") }
     if ($Yes)       { $argList += '-Yes' }
     if ($NoPause)   { $argList += '-NoPause' }
     Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $argList -Verb RunAs
@@ -39,6 +49,10 @@ if (-not (Test-Admin)) {
 }
 
 try {
+    if ($Package) {
+        Install-DriverPackage $Package (Get-Words $Name) $PrinterIP
+        return
+    }
     if (-not $Name) { $Name = Read-Host 'Printer name to search for (e.g. HP LaserJet M404)' }
     $Words   = Get-Words $Name
     $results = @(Search-All $Name)

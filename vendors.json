@@ -1,0 +1,20 @@
+{
+  "Canon": {
+    "keywords": ["canon", "pixma", "imageclass", "imagerunner", "selphy"],
+    "supportUrl": "https://www.usa.canon.com/support",
+    "publishers": ["Canon Inc"],
+    "hosts": ["canon.com", "canon.ca", "canon.jp", "canon.co.uk", "canon-europe.com", "canon.com.au", "c-wss.com"]
+  },
+  "Epson": {
+    "keywords": ["epson", "ecotank", "workforce"],
+    "supportUrl": "https://epson.com/support",
+    "publishers": ["SEIKO EPSON CORPORATION"],
+    "hosts": ["epson.com", "epson.ca", "epson.net", "epson.co.uk", "epson.eu", "epson-europe.com", "epson.com.au"]
+  },
+  "Brother": {
+    "keywords": ["brother", "hl-", "dcp-", "mfc-"],
+    "supportUrl": "https://support.brother.com/",
+    "publishers": ["Brother Industries"],
+    "hosts": ["brother.com", "brother-usa.com", "brother.ca", "brother.co.uk", "brother.eu"]
+  }
+}

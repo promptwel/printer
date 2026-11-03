@@ -103,10 +103,21 @@ function Search-All([string]$Name) {
     catch { Write-Log "WARNING: Microsoft Update Catalog search failed: $($_.Exception.Message)" 'Yellow' }
 
     $results = @($results)
-    if ($results.Count -eq 0) {
+    $vendor  = Find-Vendor $Name
+    if ($results.Count -eq 0 -and -not $vendor) {
         Write-Log "No driver found for '$Name'. Try fewer words (e.g. 'LaserJet M404'), or check the vendor's website." 'Yellow'
+    } elseif ($results.Count -eq 0) {
+        Write-Log "Nothing for '$Name' in Windows or Microsoft's catalog. Use the $($vendor.Name) download page below." 'Yellow'
     } else {
         Write-Log "Found $($results.Count) result(s)." 'Green'
+    }
+    if ($vendor) {
+        $results += [pscustomobject]@{
+            Source = 'Vendor'
+            Title  = "$($vendor.Name) official download page (opens in your browser)"
+            Id     = $vendor.SupportUrl
+            Detail = 'then use "Install file/link"'
+        }
     }
     return $results
 }
@@ -161,28 +172,7 @@ function Install-FromCatalog($Item, [string[]]$Words) {
         New-Item -ItemType Directory -Path $dir | Out-Null
         foreach ($c in $cabs) { & expand.exe $c -F:* $dir | Out-Null }
 
-        $out  = & pnputil.exe /add-driver (Join-Path $dir '*.inf') /subdirs /install 2>&1 | Out-String
-        $code = $LASTEXITCODE
-        Write-Log $out.Trim()
-        if ($code -notin 0, 3010) { Write-Log "WARNING: pnputil exited with code $code (continuing)." 'Yellow' }
-
-        Write-Step 'Registering printer driver'
-        $installed = @()
-        foreach ($inf in Get-ChildItem -Path $dir -Filter *.inf -Recurse) {
-            foreach ($model in Get-QuotedNames $inf.FullName $Words) {
-                try {
-                    Add-PrinterDriver -Name $model -InfPath $inf.FullName
-                    Write-Log "  Registered: $model" 'Green'
-                    $installed += $model
-                } catch { <# not every quoted string is a model name #> }
-            }
-        }
-        if ($installed.Count -eq 0) {
-            Write-Log ("WARNING: The driver package was installed into the Windows driver store, but no model " +
-                "matching '$($Words -join ' ')' could be registered by name. Plug in the printer " +
-                "or use Settings > Printers > Add device; Windows will now find the driver itself.") 'Yellow'
-        }
-        return $installed
+        return Install-DriverFolder $dir $Words
     }
     finally {
         Remove-Item -Path $work -Recurse -Force -ErrorAction SilentlyContinue
@@ -200,13 +190,215 @@ function Add-NetworkPrinter([string]$DriverName, [string]$IP) {
     Write-Log "Printer '$DriverName' added on $port." 'Green'
 }
 
+# --------------------------------------------------------------------------
+# Vendors (Canon / Epson / Brother) - settings live in vendors.json
+# --------------------------------------------------------------------------
+$global:PrinterLibDir = $PSScriptRoot
+
+function Get-Vendors {
+    $path = Join-Path $global:PrinterLibDir 'vendors.json'
+    if (-not (Test-Path $path)) { return @() }
+    $json = Get-Content -Raw -Path $path | ConvertFrom-Json
+    foreach ($p in $json.PSObject.Properties) {
+        [pscustomobject]@{
+            Name       = $p.Name
+            Keywords   = @($p.Value.keywords)
+            SupportUrl = $p.Value.supportUrl
+            Publishers = @($p.Value.publishers)
+            Hosts      = @($p.Value.hosts)
+        }
+    }
+}
+
+function Find-Vendor([string]$Name) {
+    foreach ($v in Get-Vendors) {
+        foreach ($k in $v.Keywords) {
+            if ($Name.IndexOf($k, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $v }
+        }
+    }
+}
+
+function Test-AllowedHost([string]$HostName) {
+    foreach ($v in Get-Vendors) {
+        foreach ($d in $v.Hosts) {
+            if ($HostName -eq $d -or $HostName.EndsWith(".$d")) { return $true }
+        }
+    }
+    return $false
+}
+
+# Opens a web page in the user's normal (non-admin) browser. Going through explorer.exe avoids
+# starting the browser with administrator rights.
+function Open-VendorPage([string]$Url) {
+    if ($Url -notmatch '^https://') { throw 'Refusing to open a non-https link.' }
+    Start-Process -FilePath 'explorer.exe' -ArgumentList $Url
+    Write-Log "Opened $Url in your browser."
+    Write-Log 'Find your model, download the Windows driver, then use "Install file/link" with the downloaded file.'
+}
+
+# The file must have a valid digital signature from Microsoft or one of the vendors in vendors.json.
+function Assert-TrustedSignature([string]$File) {
+    $sig = Get-AuthenticodeSignature -FilePath $File
+    if ($sig.Status -ne 'Valid') {
+        throw "'$([IO.Path]::GetFileName($File))' has no valid digital signature ($($sig.Status)). Not installing."
+    }
+    $subject = $sig.SignerCertificate.Subject
+    $cn = [regex]::Match($subject, 'CN=(?:"([^"]+)"|([^,]+))')
+    $signer = if ($cn.Groups[1].Success) { $cn.Groups[1].Value } else { $cn.Groups[2].Value.Trim() }
+
+    $trusted = @('Microsoft Corporation') + @(Get-Vendors | ForEach-Object { $_.Publishers })
+    foreach ($t in $trusted) {
+        if ($t -and $signer -match ('^' + [regex]::Escape($t) + '(\W|$)')) { return $signer }
+    }
+    throw ("'$([IO.Path]::GetFileName($File))' is signed by '$signer', which is not a trusted publisher. " +
+           "Not installing. (If you trust them, add the name to vendors.json.)")
+}
+
+function Get-SevenZip {
+    $c = Get-Command 7z.exe -ErrorAction SilentlyContinue
+    if ($c) { return $c.Source }
+    foreach ($p in "$env:ProgramFiles\7-Zip\7z.exe", "${env:ProgramFiles(x86)}\7-Zip\7z.exe") {
+        if ($p -and (Test-Path $p)) { return $p }
+    }
+}
+
+# Printer model names from a driver .inf (handles %Name% string substitution).
+function Get-InfModels([string]$InfPath, [string[]]$Words) {
+    $lines = Get-Content -Path $InfPath
+    $strings = @{}
+    $section = ''
+    foreach ($l in $lines) {
+        if ($l -match '^\s*\[(.+?)\]') { $section = $Matches[1]; continue }
+        if ($section -like 'Strings*' -and $l -match '^\s*([^;=\s]+)\s*=\s*"?(.*?)"?\s*(;.*)?$') {
+            $strings[$Matches[1]] = $Matches[2]
+        }
+    }
+    $found = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    $section = ''
+    foreach ($l in $lines) {
+        if ($l -match '^\s*\[(.+?)\]') { $section = $Matches[1]; continue }
+        if ($section -match '^(Strings|Version|Manufacturer|SourceDisks|DestinationDirs|ControlFlags)') { continue }
+        if ($l -match '^\s*(?:%([^%]+)%|"([^"]+)")\s*=\s*[^\s,;]+\s*,') {
+            $name = if ($Matches[1]) { $strings[$Matches[1]] } else { $Matches[2] }
+            if ($name -and (Test-AllWords $name $Words)) { [void]$found.Add($name.Trim()) }
+        }
+    }
+    return @($found)
+}
+
+# Add every .inf under $Dir to the Windows driver store, then register the matching printer models.
+function Install-DriverFolder([string]$Dir, [string[]]$Words) {
+    $out  = & pnputil.exe /add-driver (Join-Path $Dir '*.inf') /subdirs /install 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    Write-Log $out.Trim()
+    if ($code -notin 0, 3010) { Write-Log "WARNING: pnputil exited with code $code (continuing)." 'Yellow' }
+
+    $installed = @()
+    if ($Words.Count -eq 0) {
+        Write-Log 'Driver added to the Windows driver store. (Type the printer model in the search box to also register it by name.)' 'Yellow'
+        return $installed
+    }
+    Write-Step 'Registering printer driver'
+    foreach ($inf in Get-ChildItem -Path $Dir -Filter *.inf -Recurse) {
+        foreach ($model in Get-InfModels $inf.FullName $Words) {
+            try {
+                Add-PrinterDriver -Name $model -InfPath $inf.FullName
+                Write-Log "  Registered: $model" 'Green'
+                $installed += $model
+            } catch { <# not every listed name can be registered #> }
+        }
+    }
+    if ($installed.Count -eq 0) {
+        Write-Log ("WARNING: The driver was added to the Windows driver store, but no model matching " +
+            "'$($Words -join ' ')' could be registered by name. Plug in the printer or use " +
+            "Settings > Printers > Add device; Windows will now find the driver itself.") 'Yellow'
+    }
+    return $installed
+}
+
+# Install a driver the user downloaded from Canon / Epson / Brother (local file, or https link).
+# Supports .exe .msi .cab .zip. Tries to pull the driver (.inf) files out of the package and
+# install just those, silently. If that isn't possible it runs the vendor installer normally.
+function Install-FromPackage([string]$Source, [string[]]$Words) {
+    $work = Join-Path $env:TEMP ("PrinterDriver_" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $work | Out-Null
+    try {
+        $Source = $Source.Trim().Trim('"')
+        if ($Source -match '^https?://') {
+            $uri = [uri]$Source
+            if ($uri.Scheme -ne 'https') { throw 'Only https links are allowed.' }
+            if (-not (Test-AllowedHost $uri.Host)) {
+                throw "'$($uri.Host)' is not a known Canon / Epson / Brother download site. (Add it to vendors.json if you trust it.)"
+            }
+            $leaf = [IO.Path]::GetFileName($uri.AbsolutePath)
+            if (-not $leaf) { $leaf = 'driver.bin' }
+            $file = Join-Path $work $leaf
+            Write-Step "Downloading $leaf from $($uri.Host)"
+            Invoke-WebRequest -UseBasicParsing -Uri $Source -OutFile $file -UserAgent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        } else {
+            if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) { throw "File not found: $Source" }
+            $file = (Resolve-Path -LiteralPath $Source).Path
+        }
+
+        $ext = [IO.Path]::GetExtension($file).ToLowerInvariant()
+        if ($ext -notin '.exe', '.msi', '.cab', '.zip') { throw "Unsupported file type '$ext' (use .exe, .msi, .cab or .zip)." }
+
+        if ($ext -eq '.zip') {
+            Write-Log 'A .zip has no digital signature to check; Windows still refuses unsigned drivers.' 'Yellow'
+        } else {
+            Write-Step 'Verifying digital signature'
+            $signer = Assert-TrustedSignature $file
+            Write-Log "Signature OK (signed by $signer)." 'Green'
+        }
+
+        Write-Step 'Extracting driver files'
+        $dir = Join-Path $work 'extracted'
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        $extracted = $true
+        switch ($ext) {
+            '.zip' { Expand-Archive -LiteralPath $file -DestinationPath $dir -Force }
+            '.cab' { & expand.exe $file -F:* $dir | Out-Null }
+            '.msi' { Start-Process msiexec.exe -ArgumentList @('/a', "`"$file`"", '/qn', "TARGETDIR=`"$dir`"") -Wait }
+            '.exe' {
+                $7z = Get-SevenZip
+                if ($7z) { & $7z x -y "-o$dir" $file | Out-Null }
+                else { $extracted = $false; Write-Log '7-Zip not found (free from 7-zip.org); it lets this tool unpack vendor installers silently.' 'Yellow' }
+            }
+        }
+
+        $hasInf = $extracted -and (Get-ChildItem -Path $dir -Filter *.inf -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($hasInf) {
+            Write-Step 'Installing driver (no installer wizard)'
+            return Install-DriverFolder $dir $Words
+        }
+
+        if ($ext -eq '.zip' -or $ext -eq '.cab') { throw 'No driver (.inf) files found inside the package.' }
+
+        Write-Log 'Could not unpack this installer. Running the vendor installer instead; you will need to click through it.' 'Yellow'
+        if ($ext -eq '.msi') { Start-Process msiexec.exe -ArgumentList @('/i', "`"$file`"") -Wait }
+        else                 { Start-Process -FilePath $file -Wait }
+        return @()
+    }
+    finally {
+        Remove-Item -Path $work -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Install-DriverPackage([string]$Source, [string[]]$Words, [string]$PrinterIP) {
+    $names = @(Install-FromPackage $Source $Words | Where-Object { $_ })
+    if ($PrinterIP -and $names.Count -gt 0) { Add-NetworkPrinter $names[0] $PrinterIP }
+    Write-Log "`nDone." 'Green'
+}
+
 # Install one search result, optionally creating a network printer.
 function Install-Selected($Pick, [string[]]$Words, [string]$PrinterIP) {
     $driverNames = switch ($Pick.Source) {
         'Installed' { Write-Log "Driver '$($Pick.Title)' is already installed."; @($Pick.Title) }
         'Windows'   { @(Install-FromWindows $Pick.Title) }
         'Catalog'   { @(Install-FromCatalog $Pick $Words) }
+        'Vendor'    { Open-VendorPage $Pick.Id; @() }
     }
+    $driverNames = @($driverNames | Where-Object { $_ })
     if ($PrinterIP -and @($driverNames).Count -gt 0) {
         Add-NetworkPrinter @($driverNames)[0] $PrinterIP
     }

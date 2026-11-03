@@ -62,8 +62,20 @@ $btnInstall = New-Object Windows.Forms.Button
 $btnInstall.Text = 'Install selected driver'; $btnInstall.Location = '522,289'; $btnInstall.Size = '210,34'
 $btnInstall.Anchor = 'Top,Right'; $btnInstall.Enabled = $false
 
+$lblPkg = New-Object Windows.Forms.Label
+$lblPkg.Text = 'Driver file or link:'; $lblPkg.Location = '12,342'; $lblPkg.AutoSize = $true
+
+$txtPkg = New-Object Windows.Forms.TextBox
+$txtPkg.Location = '130,338'; $txtPkg.Size = '385,24'; $txtPkg.Anchor = 'Top,Left,Right'
+
+$btnBrowse = New-Object Windows.Forms.Button
+$btnBrowse.Text = 'Browse...'; $btnBrowse.Location = '523,336'; $btnBrowse.Size = '90,28'; $btnBrowse.Anchor = 'Top,Right'
+
+$btnPkg = New-Object Windows.Forms.Button
+$btnPkg.Text = 'Install file/link'; $btnPkg.Location = '620,336'; $btnPkg.Size = '112,28'; $btnPkg.Anchor = 'Top,Right'
+
 $txtLog = New-Object Windows.Forms.TextBox
-$txtLog.Location = '12,335'; $txtLog.Size = '720,205'; $txtLog.Multiline = $true; $txtLog.ReadOnly = $true
+$txtLog.Location = '12,380'; $txtLog.Size = '720,160'; $txtLog.Multiline = $true; $txtLog.ReadOnly = $true
 $txtLog.ScrollBars = 'Vertical'; $txtLog.Font = New-Object Drawing.Font('Consolas', 9)
 $txtLog.Anchor = 'Top,Bottom,Left,Right'
 
@@ -71,11 +83,12 @@ $bar = New-Object Windows.Forms.ProgressBar
 $bar.Location = '12,550'; $bar.Size = '720,18'; $bar.Style = 'Marquee'; $bar.Anchor = 'Bottom,Left,Right'
 $bar.Visible = $false
 
-$form.Controls.AddRange(@($lblName, $txtSearch, $btnSearch, $lv, $lblIP, $txtIP, $btnInstall, $txtLog, $bar))
+$form.Controls.AddRange(@($lblName, $txtSearch, $btnSearch, $lv, $lblIP, $txtIP, $btnInstall, $lblPkg, $txtPkg, $btnBrowse, $btnPkg, $txtLog, $bar))
 $form.AcceptButton = $btnSearch
 
 # ---------------------------------------------------------------- background work
 # Work runs in a separate runspace so the window never freezes.
+$global:LogSink = { param($t) $txtLog.AppendText(([string]$t) + [Environment]::NewLine) }
 $global:LogQueue = New-Object System.Collections.Concurrent.ConcurrentQueue[string]
 $script:Job = $null
 
@@ -87,6 +100,8 @@ function Set-Busy([bool]$Busy) {
     $bar.Visible = $Busy
     $btnSearch.Enabled = -not $Busy
     $btnInstall.Enabled = (-not $Busy) -and ($lv.SelectedItems.Count -gt 0)
+    $btnPkg.Enabled = -not $Busy
+    $btnBrowse.Enabled = -not $Busy
     $txtSearch.Enabled = -not $Busy
     $form.UseWaitCursor = $Busy
 }
@@ -138,6 +153,7 @@ $timer.Add_Tick({
             if ($lv.Items.Count -gt 0) { $lv.Items[0].Selected = $true }
         }
         Set-Busy $false
+        Update-InstallButton
     }
 })
 $timer.Start()
@@ -150,9 +166,31 @@ function Invoke-Search {
     Start-Work 'search' 'param($Name) Search-All $Name' @($name)
 }
 
+function Update-InstallButton {
+    $btnInstall.Enabled = ($null -eq $script:Job) -and ($lv.SelectedItems.Count -gt 0)
+    $isVendor = ($lv.SelectedItems.Count -gt 0) -and ($lv.SelectedItems[0].Tag.Source -eq 'Vendor')
+    $btnInstall.Text = if ($isVendor) { 'Open vendor download page' } else { 'Install selected driver' }
+}
+
+function Invoke-InstallFromFile {
+    $src = $txtPkg.Text.Trim().Trim('"')
+    if (-not $src) { [void][Windows.Forms.MessageBox]::Show('Choose a downloaded driver file, or paste a vendor download link.', $form.Text); return }
+    $words = Get-Words $txtSearch.Text
+    $ip    = $txtIP.Text.Trim()
+    $msg = "Install the driver from:`n$src"
+    if ($words.Count -eq 0) { $msg += "`n`nTip: type the printer model in 'Printer name' first so it can be registered by name." }
+    if ($ip) { $msg += "`n`nA network printer will also be created at $ip." }
+    if ([Windows.Forms.MessageBox]::Show($msg, $form.Text, 'OKCancel', 'Question') -ne 'OK') { return }
+    Start-Work 'install' 'param($Src, $Words, $IP) Install-DriverPackage $Src $Words $IP' @($src, $words, $ip)
+}
+
 function Invoke-Install {
     if ($lv.SelectedItems.Count -eq 0) { return }
     $pick  = $lv.SelectedItems[0].Tag
+    if ($pick.Source -eq 'Vendor') {
+        try { Open-VendorPage $pick.Id } catch { Add-LogText "ERROR: $($_.Exception.Message)" }
+        return
+    }
     $words = Get-Words $txtSearch.Text
     $ip    = $txtIP.Text.Trim()
 
@@ -165,9 +203,17 @@ function Invoke-Install {
 
 $btnSearch.Add_Click({ Invoke-Search })
 $btnInstall.Add_Click({ Invoke-Install })
-$lv.Add_SelectedIndexChanged({ $btnInstall.Enabled = ($null -eq $script:Job) -and ($lv.SelectedItems.Count -gt 0) })
+$lv.Add_SelectedIndexChanged({ Update-InstallButton })
+$btnPkg.Add_Click({ Invoke-InstallFromFile })
+$btnBrowse.Add_Click({
+    $dlg = New-Object Windows.Forms.OpenFileDialog
+    $dlg.Filter = 'Driver packages (*.exe;*.msi;*.cab;*.zip)|*.exe;*.msi;*.cab;*.zip|All files (*.*)|*.*'
+    $dlg.InitialDirectory = Join-Path $env:USERPROFILE 'Downloads'
+    if ($dlg.ShowDialog() -eq 'OK') { $txtPkg.Text = $dlg.FileName }
+})
 $lv.Add_DoubleClick({ if ($btnInstall.Enabled) { Invoke-Install } })
 $form.Add_FormClosing({ $timer.Stop() })
 
 Add-LogText 'Type a printer name (e.g. "LaserJet M404"), click Search, pick a result, then click Install.'
+Add-LogText 'Canon / Epson / Brother not found? Pick the vendor page, download the Windows driver, then use "Install file/link".'
 [void]$form.ShowDialog()

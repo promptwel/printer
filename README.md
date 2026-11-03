@@ -21,7 +21,29 @@ Command-line version (same engine):
 ```
 
 Files: `Install-PrinterDriver-GUI.ps1` (window), `Install-PrinterDriver.ps1` (command line),
-`PrinterDriverLib.ps1` (shared search/install code; keep it in the same folder).
+`PrinterDriverLib.ps1` (shared search/install code), `vendors.json` (vendor settings).
+Keep all of them in the same folder.
+
+## Canon, Epson and Brother
+
+If you search for a Canon / Epson / Brother printer, the list ends with an extra row:
+**"<Vendor> official download page"**. For these brands:
+
+1. Select that row and click **Open vendor download page**. It opens in your normal browser.
+2. Find your model, and download the Windows driver.
+3. Back in the tool, type the model in "Printer name", then click **Browse...** (or paste the
+   download link) and click **Install file/link**.
+
+The tool then checks the file is signed by the real vendor, unpacks the driver files and installs
+them directly, with no installer wizard. Command line:
+`.\Install-PrinterDriver.ps1 "Brother HL-L2350DW" -Package "C:\Users\you\Downloads\driver.exe"`
+
+Notes:
+- It does **not** search the vendors' websites by itself. Those sites change often and have no public
+  search, so the vendor page + file/link install is the dependable route.
+- Unpacking `.exe` installers needs the free [7-Zip](https://7-zip.org). Without it, or if an
+  installer can't be unpacked, the vendor's own installer is run and you click through it.
+- Trusted signers and allowed download sites are listed in `vendors.json`. Edit it to add more.
 
 ## Where it looks (in order)
 
