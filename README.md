@@ -1,93 +1,131 @@
-# Printer driver auto-installer (Windows)
+<p align="center"><img src="docs/logo.png" alt="Printer Driver Installer logo" width="120"></p>
 
-Type a printer name, pick a result, and the driver is downloaded and installed with
-no Next / Accept clicks.
+# Printer Driver Installer
+
+A Windows tool that finds a printer driver from the printer's name and installs it with no
+Next / Accept clicks. It searches the drivers already on the PC, the ones built into Windows and
+Microsoft's Update Catalog. For Canon, Epson and Brother it opens the vendor's support page for your
+model, watches your Downloads folder, and installs the file as soon as the download finishes.
+
+PowerShell + Windows Forms (a small C# launcher builds the optional single `.exe`).
+
+| Search | Vendor download, watching Downloads | Install log |
+|---|---|---|
+| ![Search results from the Microsoft Update Catalog](docs/screenshots/search.png) | ![Canon row, watching the Downloads folder](docs/screenshots/watch.png) | ![Driver added and registered by name](docs/screenshots/install.png) |
 
 ## Use
 
 Double-click **`Install-PrinterDriver.bat`**. A window opens:
 
-1. Type the printer name (e.g. `LaserJet M404`) and click **Search**.
+1. Type the printer name (for example `LaserJet M404`) and click **Search**.
 2. Click the result you want.
-3. (Optional) type the printer's IP address if it's a network printer.
+3. (Optional) type the printer's IP address if it is a network printer.
 4. Click **Install selected driver**.
 
-You get **one** administrator (UAC) prompt when the window opens, and that's all.
+Windows asks for administrator rights once, when the window opens.
 
-Command-line version (same engine):
+Command line (same engine):
 
 ```powershell
 .\Install-PrinterDriver.ps1 "Canon MF445dw" -PrinterIP 192.168.1.50 -Yes
 ```
 
-Files: `Install-PrinterDriver-GUI.ps1` (window), `Install-PrinterDriver.ps1` (command line),
-`PrinterDriverLib.ps1` (shared search/install code), `vendors.json` (vendor settings).
-Keep all of them in the same folder.
+Keep `Install-PrinterDriver-GUI.ps1`, `Install-PrinterDriver.ps1`, `PrinterDriverLib.ps1` and
+`vendors.json` in the same folder.
+
+## Where it looks
+
+1. Drivers already installed on the PC.
+2. Drivers built into Windows.
+3. Microsoft Update Catalog: only Windows 10/11 printer packages are listed. Packages whose title has
+   no model name (HP, newer Lexmark) are listed after the exact matches; only a model that matches
+   what you typed is registered.
+4. Canon, Epson, Brother: a vendor row at the end of the list (see below).
+
+After a driver is added to the Windows driver store, the tool registers the matching model by name
+so it shows up as a printer driver, and can create a network printer from an IP address.
 
 ## Canon, Epson and Brother
 
-If you search for a Canon / Epson / Brother printer, the list ends with an extra row:
-**"<Vendor> download page for '<your model>'"**. For these brands:
+Select the vendor row and click **Open page & auto-install**:
 
-1. Select that row and click **Open page & auto-install**. Your browser opens a search for your model,
-   limited to the vendor's support site, and the tool starts watching your Downloads folder (15 min,
-   **Stop watching** cancels).
-2. Download the Windows driver in the browser.
-3. When the download finishes the tool picks it up, checks it is signed by the real vendor, unpacks
-   the driver files and installs them, with no installer wizard.
+1. Your browser opens a search for your model, limited to the vendor's support site. The tool starts
+   watching your Downloads folder for 15 minutes (**Stop watching** cancels).
+2. You download the Windows driver in the browser.
+3. When the file finishes, the tool checks it is signed by the real vendor, unpacks the driver files
+   and installs them with no installer wizard.
 
-Auto-install handles `.exe`, `.msi` and `.cab` only. A `.zip` has no signature, so use **Browse...**
-and **Install file/link** for it (or for a file you downloaded earlier). Command line:
-`.\Install-PrinterDriver.ps1 "Brother HL-L2350DW" -Package "C:\Users\you\Downloads\driver.exe"`
+Auto-install handles `.exe`, `.msi` and `.cab`. A `.zip` has no signature, so use **Browse...** and
+**Install file/link** for it, or for a file you downloaded earlier:
 
-Notes:
-- It does **not** click through the vendors' websites for you. Those sites change often and have no
-  public search, so you pick and download the file; the tool does everything after that.
-- Vendor `.exe` installers are unpacked with the lightest method that works, in this order:
-  1. as a zip archive (built into Windows, no extra software),
-  2. by finding CAB archives packed inside the `.exe` (also built into Windows),
-  3. with 7-Zip. If it isn't installed, the tool installs it once, silently, through Windows
-     Package Manager (`winget`), which verifies the download itself.
+```powershell
+.\Install-PrinterDriver.ps1 "Brother DCP-T420W" -Package "C:\Users\you\Downloads\driver.exe"
+```
 
-  Whichever works first is used, and then only the driver files are installed, with no wizard.
-  Only if none of them can open the installer (some vendors use a private format) does the tool run
-  the vendor's own installer, and then you have to click through it.
-- Trusted signers, allowed download sites and each vendor's support page (set to the Philippines) are in `vendors.json`. Edit the `supportUrl` lines for another country.
+The tool does not click through the vendors' sites for you. They change often, have no public search,
+and Epson's file server refuses scripted downloads, so you choose and download the file.
 
-## Where it looks (in order)
-
-1. Drivers already installed on the PC
-2. Drivers built into Windows
-3. Microsoft Update Catalog (official Microsoft-signed driver packages)
+Vendor `.exe` installers are unpacked with the lightest method that works: as a zip archive, then by
+finding CAB archives packed inside, then with 7-Zip (found in its install folder, or installed once
+through `winget`). Only if none works does the tool run the vendor's own installer.
 
 ## Safety
 
-- Downloads only from `*.windowsupdate.com` / `*.microsoft.com`.
-- Refuses to install any file without a valid Microsoft digital signature.
+- Catalog downloads come only from `*.windowsupdate.com` / `*.microsoft.com` and must carry a valid
+  Microsoft signature.
+- Vendor files must carry a valid signature from Microsoft or a publisher listed in `vendors.json`.
+  Links must be `https` and on a listed vendor site.
+- Zip archives are unpacked with a path check (no files outside the target folder). A `.zip` is never
+  auto-installed.
+- Auto-install only picks up files that appear after you click, and never runs an unsigned file.
+- Windows itself still refuses unsigned drivers.
+
+Trusted publishers, allowed download sites and each vendor's support page (set to the Philippines)
+live in `vendors.json`. Edit the `supportUrl` lines for another country.
+
+## Tests
+
+```powershell
+.\tests\Test-PrinterDriverLib.ps1            # 55 checks, uses the live Update Catalog
+.\tests\Test-PrinterDriverLib.ps1 -Offline   # 45 checks, no network
+```
+
+The checks change nothing on the PC: vendor matching, the https and host allow-list, signature checks
+(unsigned, wrong publisher, tampered, genuine), zip-slip, CAB carving from inside an `.exe`, `.inf`
+parsing and the catalog parser.
+
+Real installs need administrator rights, so they were tested by hand. Installing and then removing
+every added package left the driver store unchanged for:
+
+- **Brother** DCP-T420W (signed `.exe`, unpacked with 7-Zip) and **Epson** L3210 (signed `.exe`,
+  unpacked as a zip), both downloaded in a browser and picked up by the watcher.
+- **Lexmark** MX410, **Kyocera** FS-1040 and **HP** LaserJet Pro M404, from the Microsoft catalog.
+
+Not tested: Canon.
 
 ## Limits
 
-- Only finds drivers Microsoft publishes. A few models (some Canon/Epson/Brother, newer
-  models) exist only on the vendor's site; the script will say "No driver found" for those.
-  Vendor-specific lookups can be added later.
+- A model is registered by name only if the package lists it. Otherwise the driver is still added to
+  the driver store, and Windows uses it when the printer is plugged in.
+- The "built into Windows" list is short on current Windows 11.
 - Searches work best with short names ("LaserJet M404", not the full marketing name).
-- USB printers: once the driver is installed, plug the printer in and Windows finishes setup.
-- Parsing the Update Catalog web page is unofficial, so Microsoft changing that page could break the
-  catalog search. The installed/built-in sources are unaffected.
+- The Update Catalog page is parsed without an official API, so Microsoft changing it could break
+  catalog search. The installed and built-in sources are unaffected.
+- USB printers: after the driver is installed, plug the printer in and Windows finishes setup.
 
 ## One file / one exe
 
-The `onefile/` folder has everything merged into a single script, plus a way to make a single `.exe`:
+`onefile/` has everything merged into a single script, plus a way to make a single `.exe`:
 
-- `onefile/PrinterDriverInstaller.ps1`: the whole tool in **one file** (right-click, Run with PowerShell).
-- `onefile/Build-Exe.bat` + `Launcher.cs`: double-click `Build-Exe.bat` once to produce
-  **`PrinterDriverInstaller.exe`** (the script is embedded inside it). It uses the compiler that
-  already ships with Windows, so there is nothing to install. Keep the three files together while building.
+- `onefile/PrinterDriverInstaller.ps1`: the whole tool in one file (right-click, Run with PowerShell).
+- `onefile/Build-Exe.bat` + `Launcher.cs`: double-click `Build-Exe.bat` to produce
+  `PrinterDriverInstaller.exe`, with the script embedded. It uses the compiler that ships with
+  Windows, so nothing needs installing.
 
 The exe asks for administrator rights once, unpacks the script into `C:\ProgramData` (a folder normal
-users can't modify), runs it, and deletes it again when you close the window.
+users cannot modify), runs it, and deletes it when you close the window.
 
-Rebuild the single script after changing the sources: `python3 tools/build_single.py`.
+Rebuild the single script after changing the sources: `python tools/build_single.py`.
 
-Note: an unsigned `.exe` will usually make Windows SmartScreen (and sometimes antivirus) show a warning.
-Click **More info > Run anyway**. Removing the warning needs a paid code-signing certificate.
+An unsigned `.exe` usually makes Windows SmartScreen show a warning. Click **More info > Run anyway**.
+Removing the warning needs a paid code-signing certificate.

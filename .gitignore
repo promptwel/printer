@@ -1,0 +1,7 @@
+# built by onefile/Build-Exe.bat
+onefile/*.exe
+
+# local scratch
+*.log
+setup.inf
+setup.rpt
