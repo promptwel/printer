@@ -262,6 +262,133 @@ function Get-SevenZip {
     }
 }
 
+function Test-HasInf([string]$Dir) {
+    [bool](Get-ChildItem -Path $Dir -Filter *.inf -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)
+}
+
+# Unzip with built-in .NET (no 7-Zip). Refuses entries that would land outside $Dest.
+function Expand-ZipSafe([string]$Zip, [string]$Dest) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $root = [IO.Path]::GetFullPath($Dest).TrimEnd('\') + '\'
+    $archive = [IO.Compression.ZipFile]::OpenRead($Zip)
+    try {
+        foreach ($e in $archive.Entries) {
+            $target = [IO.Path]::GetFullPath((Join-Path $Dest $e.FullName))
+            if (-not $target.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Unsafe path inside archive: $($e.FullName)"
+            }
+            if ([string]::IsNullOrEmpty($e.Name)) {
+                New-Item -ItemType Directory -Force -Path $target | Out-Null
+                continue
+            }
+            New-Item -ItemType Directory -Force -Path ([IO.Path]::GetDirectoryName($target)) | Out-Null
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($e, $target, $true)
+        }
+    }
+    finally { $archive.Dispose() }
+}
+
+# Many vendor .exe installers are self-extractors with one or more CAB archives packed inside.
+# Find them by their header, cut them out, and unpack them with Windows' built-in expand.exe.
+function Expand-EmbeddedCabs([string]$File, [string]$Dest) {
+    if (-not ('PkgCarver' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.IO;
+public static class PkgCarver {
+    public static int CarveCabs(string src, string outDir) {
+        int count = 0;
+        using (FileStream fs = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.Read)) {
+            long len = fs.Length;
+            byte[] buf = new byte[1 << 20];
+            List<long> hits = new List<long>();
+            long pos = 0;
+            while (pos < len) {
+                fs.Position = pos;
+                int read = fs.Read(buf, 0, buf.Length);
+                if (read <= 0) break;
+                for (int i = 0; i + 4 <= read; i++) {
+                    if (buf[i] == 0x4D && buf[i+1] == 0x53 && buf[i+2] == 0x43 && buf[i+3] == 0x46) hits.Add(pos + i);
+                }
+                if (pos + read >= len) break;
+                pos += read - 3;
+            }
+            long lastEnd = 0;
+            byte[] hdr = new byte[36];
+            foreach (long h in hits) {
+                if (h < lastEnd || h + 36 > len) continue;
+                fs.Position = h;
+                if (fs.Read(hdr, 0, 36) < 36) continue;
+                uint reserved = BitConverter.ToUInt32(hdr, 4);
+                uint size = BitConverter.ToUInt32(hdr, 8);
+                if (reserved != 0 || hdr[24] != 3 || hdr[25] != 1) continue;
+                if (size < 36 || h + size > len) continue;
+                string path = Path.Combine(outDir, "embedded_" + (count + 1) + ".cab");
+                fs.Position = h;
+                using (FileStream o = new FileStream(path, FileMode.Create, FileAccess.Write)) {
+                    long remaining = size;
+                    byte[] cp = new byte[1 << 16];
+                    while (remaining > 0) {
+                        int n = fs.Read(cp, 0, (int)Math.Min((long)cp.Length, remaining));
+                        if (n <= 0) break;
+                        o.Write(cp, 0, n);
+                        remaining -= n;
+                    }
+                }
+                lastEnd = h + size;
+                count++;
+            }
+        }
+        return count;
+    }
+}
+'@
+    }
+    $n = [PkgCarver]::CarveCabs($File, $Dest)
+    if ($n -eq 0) { throw 'no embedded CAB archives found' }
+    foreach ($cab in Get-ChildItem -Path $Dest -Filter 'embedded_*.cab') {
+        $sub = Join-Path $Dest ([IO.Path]::GetFileNameWithoutExtension($cab.Name))
+        New-Item -ItemType Directory -Path $sub | Out-Null
+        & expand.exe $cab.FullName -F:* $sub | Out-Null
+    }
+}
+
+# Last unpacking resort: 7-Zip. If missing, install it once through Windows Package Manager (winget),
+# which checks the package hash itself.
+function Expand-With7Zip([string]$File, [string]$Dest) {
+    $sevenZip = Get-SevenZip
+    if (-not $sevenZip) {
+        $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+        if (-not $winget) { throw '7-Zip is not installed and winget is not available' }
+        Write-Log '    installing 7-Zip (free) with Windows Package Manager...'
+        & $winget.Source install --id 7zip.7zip -e --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+        $sevenZip = Get-SevenZip
+        if (-not $sevenZip) { throw 'could not install 7-Zip' }
+    }
+    & $sevenZip x -y "-o$Dest" $File | Out-Null
+}
+
+# Try to get the driver (.inf) files out of a vendor .exe, from cheapest/safest method to heaviest.
+# Returns the folder holding them, or $null if the installer can't be unpacked.
+function Expand-Installer([string]$File, [string]$Work) {
+    $tiers = @(
+        @{ Label = 'as a zip archive';          Action = { param($f, $d) Expand-ZipSafe $f $d } },
+        @{ Label = 'by finding embedded CABs';  Action = { param($f, $d) Expand-EmbeddedCabs $f $d } },
+        @{ Label = 'with 7-Zip';                Action = { param($f, $d) Expand-With7Zip $f $d } }
+    )
+    $n = 0
+    foreach ($t in $tiers) {
+        $n++
+        $d = Join-Path $Work "unpack$n"
+        New-Item -ItemType Directory -Path $d | Out-Null
+        Write-Log "  Trying to unpack $($t.Label)..."
+        try { & $t.Action $File $d } catch { Write-Log "    not possible: $($_.Exception.Message)" }
+        if (Test-HasInf $d) { Write-Log "  Unpacked $($t.Label)." 'Green'; return $d }
+    }
+    return $null
+}
+
 # Printer model names from a driver .inf (handles %Name% string substitution).
 function Get-InfModels([string]$InfPath, [string[]]$Words) {
     $lines = Get-Content -Path $InfPath
@@ -317,8 +444,9 @@ function Install-DriverFolder([string]$Dir, [string[]]$Words) {
 }
 
 # Install a driver the user downloaded from Canon / Epson / Brother (local file, or https link).
-# Supports .exe .msi .cab .zip. Tries to pull the driver (.inf) files out of the package and
-# install just those, silently. If that isn't possible it runs the vendor installer normally.
+# Supports .exe .msi .cab .zip. Pulls the driver (.inf) files out of the package (built-in Windows
+# tools first, 7-Zip only if needed) and installs just those, silently. Only if that is impossible
+# does it run the vendor installer normally.
 function Install-FromPackage([string]$Source, [string[]]$Words) {
     $work = Join-Path $env:TEMP ("PrinterDriver_" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $work | Out-Null
@@ -352,21 +480,27 @@ function Install-FromPackage([string]$Source, [string[]]$Words) {
         }
 
         Write-Step 'Extracting driver files'
-        $dir = Join-Path $work 'extracted'
-        New-Item -ItemType Directory -Path $dir | Out-Null
-        $extracted = $true
+        $dir = $null
         switch ($ext) {
-            '.zip' { Expand-Archive -LiteralPath $file -DestinationPath $dir -Force }
-            '.cab' { & expand.exe $file -F:* $dir | Out-Null }
-            '.msi' { Start-Process msiexec.exe -ArgumentList @('/a', "`"$file`"", '/qn', "TARGETDIR=`"$dir`"") -Wait }
-            '.exe' {
-                $7z = Get-SevenZip
-                if ($7z) { & $7z x -y "-o$dir" $file | Out-Null }
-                else { $extracted = $false; Write-Log '7-Zip not found (free from 7-zip.org); it lets this tool unpack vendor installers silently.' 'Yellow' }
+            '.zip' {
+                $dir = Join-Path $work 'unpack'
+                New-Item -ItemType Directory -Path $dir | Out-Null
+                Expand-ZipSafe $file $dir
             }
+            '.cab' {
+                $dir = Join-Path $work 'unpack'
+                New-Item -ItemType Directory -Path $dir | Out-Null
+                & expand.exe $file -F:* $dir | Out-Null
+            }
+            '.msi' {
+                $dir = Join-Path $work 'unpack'
+                New-Item -ItemType Directory -Path $dir | Out-Null
+                Start-Process msiexec.exe -ArgumentList @('/a', "`"$file`"", '/qn', "TARGETDIR=`"$dir`"") -Wait
+            }
+            '.exe' { $dir = Expand-Installer $file $work }
         }
 
-        $hasInf = $extracted -and (Get-ChildItem -Path $dir -Filter *.inf -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)
+        $hasInf = $dir -and (Test-HasInf $dir)
         if ($hasInf) {
             Write-Step 'Installing driver (no installer wizard)'
             return Install-DriverFolder $dir $Words
@@ -374,7 +508,7 @@ function Install-FromPackage([string]$Source, [string[]]$Words) {
 
         if ($ext -eq '.zip' -or $ext -eq '.cab') { throw 'No driver (.inf) files found inside the package.' }
 
-        Write-Log 'Could not unpack this installer. Running the vendor installer instead; you will need to click through it.' 'Yellow'
+        Write-Log 'This installer cannot be unpacked automatically (it uses a private format). Running the vendor installer normally as a last resort; you will need to click through it.' 'Yellow'
         if ($ext -eq '.msi') { Start-Process msiexec.exe -ArgumentList @('/i', "`"$file`"") -Wait }
         else                 { Start-Process -FilePath $file -Wait }
         return @()

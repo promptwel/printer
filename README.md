@@ -41,8 +41,15 @@ them directly, with no installer wizard. Command line:
 Notes:
 - It does **not** search the vendors' websites by itself. Those sites change often and have no public
   search, so the vendor page + file/link install is the dependable route.
-- Unpacking `.exe` installers needs the free [7-Zip](https://7-zip.org). Without it, or if an
-  installer can't be unpacked, the vendor's own installer is run and you click through it.
+- Vendor `.exe` installers are unpacked with the lightest method that works, in this order:
+  1. as a zip archive (built into Windows, no extra software),
+  2. by finding CAB archives packed inside the `.exe` (also built into Windows),
+  3. with 7-Zip. If it isn't installed, the tool installs it once, silently, through Windows
+     Package Manager (`winget`), which verifies the download itself.
+
+  Whichever works first is used, and then only the driver files are installed, with no wizard.
+  Only if none of them can open the installer (some vendors use a private format) does the tool run
+  the vendor's own installer, and then you have to click through it.
 - Trusted signers and allowed download sites are listed in `vendors.json`. Edit it to add more.
 
 ## Where it looks (in order)
