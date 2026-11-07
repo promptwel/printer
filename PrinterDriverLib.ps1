@@ -193,12 +193,19 @@ function Add-NetworkPrinter([string]$DriverName, [string]$IP) {
 # --------------------------------------------------------------------------
 # Vendors (Canon / Epson / Brother) - settings live in vendors.json
 # --------------------------------------------------------------------------
-$global:PrinterLibDir = $PSScriptRoot
+if (-not $global:PrinterLibDir) { $global:PrinterLibDir = $PSScriptRoot }
 
+# Reads vendors.json from the tool's folder if present; otherwise uses the copy embedded in the
+# single-file build ($global:VendorJsonText).
 function Get-Vendors {
-    $path = Join-Path $global:PrinterLibDir 'vendors.json'
-    if (-not (Test-Path $path)) { return @() }
-    $json = Get-Content -Raw -Path $path | ConvertFrom-Json
+    $text = $null
+    if ($global:PrinterLibDir) {
+        $path = Join-Path $global:PrinterLibDir 'vendors.json'
+        if (Test-Path $path) { $text = Get-Content -Raw -Path $path }
+    }
+    if (-not $text) { $text = $global:VendorJsonText }
+    if (-not $text) { return @() }
+    $json = $text | ConvertFrom-Json
     foreach ($p in $json.PSObject.Properties) {
         [pscustomobject]@{
             Name       = $p.Name

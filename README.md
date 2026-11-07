@@ -72,3 +72,20 @@ Notes:
 - USB printers: once the driver is installed, plug the printer in and Windows finishes setup.
 - Parsing the Update Catalog web page is unofficial, so Microsoft changing that page could break the
   catalog search. The installed/built-in sources are unaffected.
+
+## One file / one exe
+
+The `onefile/` folder has everything merged into a single script, plus a way to make a single `.exe`:
+
+- `onefile/PrinterDriverInstaller.ps1`: the whole tool in **one file** (right-click, Run with PowerShell).
+- `onefile/Build-Exe.bat` + `Launcher.cs`: double-click `Build-Exe.bat` once to produce
+  **`PrinterDriverInstaller.exe`** (the script is embedded inside it). It uses the compiler that
+  already ships with Windows, so there is nothing to install. Keep the three files together while building.
+
+The exe asks for administrator rights once, unpacks the script into `C:\ProgramData` (a folder normal
+users can't modify), runs it, and deletes it again when you close the window.
+
+Rebuild the single script after changing the sources: `python3 tools/build_single.py`.
+
+Note: an unsigned `.exe` will usually make Windows SmartScreen (and sometimes antivirus) show a warning.
+Click **More info > Run anyway**. Removing the warning needs a paid code-signing certificate.
