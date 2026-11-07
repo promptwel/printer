@@ -50,7 +50,7 @@ Notes:
   Whichever works first is used, and then only the driver files are installed, with no wizard.
   Only if none of them can open the installer (some vendors use a private format) does the tool run
   the vendor's own installer, and then you have to click through it.
-- Trusted signers and allowed download sites are listed in `vendors.json`. Edit it to add more.
+- Trusted signers, allowed download sites and each vendor's support page (set to the Philippines) are in `vendors.json`. Edit the `supportUrl` lines for another country.
 
 ## Where it looks (in order)
 

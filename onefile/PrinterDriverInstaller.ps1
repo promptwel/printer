@@ -10,21 +10,21 @@ $global:VendorJsonText = @'
 {
   "Canon": {
     "keywords": ["canon", "pixma", "imageclass", "imagerunner", "selphy"],
-    "supportUrl": "https://www.usa.canon.com/support",
+    "supportUrl": "https://ph.canon/en/support",
     "publishers": ["Canon Inc"],
-    "hosts": ["canon.com", "canon.ca", "canon.jp", "canon.co.uk", "canon-europe.com", "canon.com.au", "c-wss.com"]
+    "hosts": ["ph.canon", "canon.com.ph", "canon-asia.com", "asia.canon", "canon.com", "canon.jp", "canon-europe.com", "c-wss.com"]
   },
   "Epson": {
     "keywords": ["epson", "ecotank", "workforce"],
-    "supportUrl": "https://epson.com/support",
+    "supportUrl": "https://www.epson.com.ph/Support/sl/s",
     "publishers": ["SEIKO EPSON CORPORATION"],
-    "hosts": ["epson.com", "epson.ca", "epson.net", "epson.co.uk", "epson.eu", "epson-europe.com", "epson.com.au"]
+    "hosts": ["epson.com.ph", "epson.com.sg", "epson.com", "epson.net", "epson.co.uk", "epson.eu", "epson-europe.com"]
   },
   "Brother": {
     "keywords": ["brother", "hl-", "dcp-", "mfc-"],
-    "supportUrl": "https://support.brother.com/",
+    "supportUrl": "https://support.brother.com/g/b/countrytop.aspx?c=ph&lang=en",
     "publishers": ["Brother Industries"],
-    "hosts": ["brother.com", "brother-usa.com", "brother.ca", "brother.co.uk", "brother.eu"]
+    "hosts": ["brother.com", "brother.com.ph", "brother-usa.com", "brother.co.uk", "brother.eu"]
   }
 }
 '@
