@@ -72,8 +72,8 @@ function Search-Catalog([string]$Query, [string[]]$Words) {
         })
         if ($cells.Count -lt 7) { continue }
         $title = $cells[1]
-        if ($cells[3] -notmatch 'Driver') { continue }
-        if (-not (Test-AllWords $title $Words)) { continue }
+        # "Drivers (Other Hardware)" rows are scanner / USB stubs, never a printer driver.
+        if ($cells[3] -notmatch 'Printer') { continue }
 
         $date = [datetime]::MinValue
         [void][datetime]::TryParseExact($cells[4], 'M/d/yyyy',
@@ -85,9 +85,22 @@ function Search-Catalog([string]$Query, [string[]]$Words) {
             Id     = $row.Groups[1].Value
             Detail = "$($cells[4]), $($cells[6])"
             Date   = $date
+            Os     = $cells[2]
+            InTitle = (Test-AllWords $title $Words)
         }
     }
-    $results | Sort-Object Date -Descending | Select-Object -First 15
+    $results = @($results)
+    # Older packages (e.g. 32-bit XP drivers) can't register on a current 64-bit Windows.
+    $results = @($results | Where-Object { $_.Os -match 'Windows (10|11)' })
+    $exact = @($results | Where-Object InTitle | Sort-Object Date -Descending)
+
+    # Many packages (HP, newer Lexmark) are titled "Printer - 8.0.x" with no model name. The catalog
+    # already matched every word server-side, so keep those rows too, after the exact ones:
+    # Windows 10/11 only, one per title+date. Install-FromCatalog then registers only models
+    # matching the typed name.
+    $loose = @($results | Where-Object { -not $_.InTitle } | Sort-Object Date -Descending | Group-Object Title, Date | ForEach-Object { $_.Group[0] } |
+        ForEach-Object { $_.Detail += ' (model not in title; installs only if it matches your printer name)'; $_ })
+    @($exact + $loose) | Select-Object -First 15
 }
 
 # Search everywhere. Returns an array of result objects (possibly empty).
@@ -114,9 +127,9 @@ function Search-All([string]$Name) {
     if ($vendor) {
         $results += [pscustomobject]@{
             Source = 'Vendor'
-            Title  = "$($vendor.Name) official download page (opens in your browser)"
-            Id     = $vendor.SupportUrl
-            Detail = 'then use "Install file/link"'
+            Title  = "$($vendor.Name) download page for '$Name' (opens in your browser)"
+            Id     = Get-VendorSearchUrl $vendor $Name
+            Detail = 'auto-installs after download'
         }
     }
     return $results
@@ -170,7 +183,7 @@ function Install-FromCatalog($Item, [string[]]$Words) {
         Write-Step 'Extracting and installing driver package'
         $dir = Join-Path $work 'extracted'
         New-Item -ItemType Directory -Path $dir | Out-Null
-        foreach ($c in $cabs) { & expand.exe $c -F:* $dir | Out-Null }
+        foreach ($c in $cabs) { & "$env:windir\System32\expand.exe" $c -F:* $dir | Out-Null }
 
         return Install-DriverFolder $dir $Words
     }
@@ -234,13 +247,45 @@ function Test-AllowedHost([string]$HostName) {
     return $false
 }
 
+# A web search for this model, limited to the vendor's own support site (their sites have no public
+# search API, so this is the dependable "prepared page").
+function Get-VendorSearchUrl($Vendor, [string]$Name) {
+    $h = ([uri]$Vendor.SupportUrl).Host
+    'https://www.google.com/search?q=' + [uri]::EscapeDataString("$Name driver download site:$h")
+}
+
+# Opens the prepared page, then watches the Downloads folder. When a new .exe/.msi/.cab finishes
+# downloading it is installed (same signature check as "Install file/link"; .zip is never auto-installed).
+function Open-AndInstallDownload([string]$Url, [string[]]$Words, [string]$PrinterIP, [double]$TimeoutMin = 15) {
+    $dir  = Join-Path $env:USERPROFILE 'Downloads'
+    $seen = @{}
+    Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue | ForEach-Object { $seen[$_.FullName] = $true }
+    Open-VendorPage $Url
+    Write-Step "Watching $dir for your driver download (up to $TimeoutMin min)"
+    $deadline = (Get-Date).AddMinutes($TimeoutMin)
+    $file = $null
+    while (-not $file -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 2
+        $c = Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue |
+            Where-Object { -not $seen[$_.FullName] -and $_.Extension -in '.exe', '.msi', '.cab' } | Select-Object -First 1
+        if (-not $c) { continue }
+        $size = $c.Length; Start-Sleep -Seconds 3; $c.Refresh()
+        if ($c.Length -ne $size -or $size -eq 0) { continue }
+        try { [IO.File]::Open($c.FullName, 'Open', 'Read', 'None').Dispose(); $file = $c.FullName } catch { }
+    }
+    if (-not $file) { throw 'No driver download appeared. Download it, then use "Install file/link".' }
+    Write-Log "Download detected: $file" 'Green'
+    $names = @(Install-FromPackage $file $Words | Where-Object { $_ })
+    if ($PrinterIP -and $names.Count -gt 0) { Add-NetworkPrinter $names[0] $PrinterIP }
+}
+
 # Opens a web page in the user's normal (non-admin) browser. Going through explorer.exe avoids
 # starting the browser with administrator rights.
 function Open-VendorPage([string]$Url) {
     if ($Url -notmatch '^https://') { throw 'Refusing to open a non-https link.' }
     Start-Process -FilePath 'explorer.exe' -ArgumentList $Url
     Write-Log "Opened $Url in your browser."
-    Write-Log 'Find your model, download the Windows driver, then use "Install file/link" with the downloaded file.'
+    Write-Log 'Find your model and download the Windows driver. It installs automatically when the download finishes.'
 }
 
 # The file must have a valid digital signature from Microsoft or one of the vendors in vendors.json.
@@ -266,6 +311,13 @@ function Get-SevenZip {
     if ($c) { return $c.Source }
     foreach ($p in "$env:ProgramFiles\7-Zip\7z.exe", "${env:ProgramFiles(x86)}\7-Zip\7z.exe") {
         if ($p -and (Test-Path $p)) { return $p }
+    }
+    # 7-Zip can be installed on another drive/folder; its installer records the location here.
+    foreach ($k in 'HKLM:\SOFTWARE\7-Zip', 'HKCU:\SOFTWARE\7-Zip', 'HKLM:\SOFTWARE\WOW6432Node\7-Zip') {
+        $reg = Get-ItemProperty -Path $k -ErrorAction SilentlyContinue
+        foreach ($dir in $reg.Path64, $reg.Path) {
+            if ($dir) { $p = Join-Path $dir '7z.exe'; if (Test-Path $p) { return $p } }
+        }
     }
 }
 
@@ -357,7 +409,7 @@ public static class PkgCarver {
     foreach ($cab in Get-ChildItem -Path $Dest -Filter 'embedded_*.cab') {
         $sub = Join-Path $Dest ([IO.Path]::GetFileNameWithoutExtension($cab.Name))
         New-Item -ItemType Directory -Path $sub | Out-Null
-        & expand.exe $cab.FullName -F:* $sub | Out-Null
+        & "$env:windir\System32\expand.exe" $cab.FullName -F:* $sub | Out-Null
     }
 }
 
@@ -436,7 +488,9 @@ function Install-DriverFolder([string]$Dir, [string[]]$Words) {
     foreach ($inf in Get-ChildItem -Path $Dir -Filter *.inf -Recurse) {
         foreach ($model in Get-InfModels $inf.FullName $Words) {
             try {
-                Add-PrinterDriver -Name $model -InfPath $inf.FullName
+                # The package is already in the driver store (pnputil above), so register it by name.
+                # -InfPath alone fails with "invalid value" on current Windows; keep it only as a fallback.
+                try { Add-PrinterDriver -Name $model } catch { Add-PrinterDriver -Name $model -InfPath $inf.FullName }
                 Write-Log "  Registered: $model" 'Green'
                 $installed += $model
             } catch { <# not every listed name can be registered #> }
@@ -497,7 +551,7 @@ function Install-FromPackage([string]$Source, [string[]]$Words) {
             '.cab' {
                 $dir = Join-Path $work 'unpack'
                 New-Item -ItemType Directory -Path $dir | Out-Null
-                & expand.exe $file -F:* $dir | Out-Null
+                & "$env:windir\System32\expand.exe" $file -F:* $dir | Out-Null
             }
             '.msi' {
                 $dir = Join-Path $work 'unpack'
@@ -537,7 +591,7 @@ function Install-Selected($Pick, [string[]]$Words, [string]$PrinterIP) {
         'Installed' { Write-Log "Driver '$($Pick.Title)' is already installed."; @($Pick.Title) }
         'Windows'   { @(Install-FromWindows $Pick.Title) }
         'Catalog'   { @(Install-FromCatalog $Pick $Words) }
-        'Vendor'    { Open-VendorPage $Pick.Id; @() }
+        'Vendor'    { Open-AndInstallDownload $Pick.Id $Words $PrinterIP; @() }
     }
     $driverNames = @($driverNames | Where-Object { $_ })
     if ($PrinterIP -and @($driverNames).Count -gt 0) {

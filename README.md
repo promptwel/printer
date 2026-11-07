@@ -27,20 +27,22 @@ Keep all of them in the same folder.
 ## Canon, Epson and Brother
 
 If you search for a Canon / Epson / Brother printer, the list ends with an extra row:
-**"<Vendor> official download page"**. For these brands:
+**"<Vendor> download page for '<your model>'"**. For these brands:
 
-1. Select that row and click **Open vendor download page**. It opens in your normal browser.
-2. Find your model, and download the Windows driver.
-3. Back in the tool, type the model in "Printer name", then click **Browse...** (or paste the
-   download link) and click **Install file/link**.
+1. Select that row and click **Open page & auto-install**. Your browser opens a search for your model,
+   limited to the vendor's support site, and the tool starts watching your Downloads folder (15 min,
+   **Stop watching** cancels).
+2. Download the Windows driver in the browser.
+3. When the download finishes the tool picks it up, checks it is signed by the real vendor, unpacks
+   the driver files and installs them, with no installer wizard.
 
-The tool then checks the file is signed by the real vendor, unpacks the driver files and installs
-them directly, with no installer wizard. Command line:
+Auto-install handles `.exe`, `.msi` and `.cab` only. A `.zip` has no signature, so use **Browse...**
+and **Install file/link** for it (or for a file you downloaded earlier). Command line:
 `.\Install-PrinterDriver.ps1 "Brother HL-L2350DW" -Package "C:\Users\you\Downloads\driver.exe"`
 
 Notes:
-- It does **not** search the vendors' websites by itself. Those sites change often and have no public
-  search, so the vendor page + file/link install is the dependable route.
+- It does **not** click through the vendors' websites for you. Those sites change often and have no
+  public search, so you pick and download the file; the tool does everything after that.
 - Vendor `.exe` installers are unpacked with the lightest method that works, in this order:
   1. as a zip archive (built into Windows, no extra software),
   2. by finding CAB archives packed inside the `.exe` (also built into Windows),
